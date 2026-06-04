@@ -14,6 +14,10 @@
   .sync-btn { background: #4CAF50; color: white; border: none; padding: 8px 18px; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600; }
   .sync-btn:hover { background: #45a049; }
   .sync-btn:disabled { background: #888; cursor: default; }
+  .rate-block { display: flex; align-items: center; gap: 8px; background: rgba(255,255,255,0.1); padding: 6px 12px; border-radius: 8px; }
+  .rate-block label { font-size: 13px; opacity: 0.8; }
+  .rate-block input { width: 70px; padding: 4px 8px; border-radius: 6px; border: none; font-size: 14px; font-weight: 600; text-align: center; }
+  .rate-block button { background: #3498db; color: white; border: none; padding: 5px 12px; border-radius: 6px; cursor: pointer; font-size: 13px; }
   .container { max-width: 1400px; margin: 0 auto; padding: 24px; }
   .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px; }
   .kpi-card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
@@ -50,6 +54,11 @@
   <div>
     <h1>💎 Кристаллик — Склад</h1>
     <div class="subtitle updated" id="updated">Загрузка...</div>
+  </div>
+  <div class="rate-block">
+    <label>💱 Курс $:</label>
+    <input type="number" id="rate-input" step="0.1" min="1" value="41.5" />
+    <button onclick="saveRate()">Сохранить</button>
   </div>
   <button class="sync-btn" onclick="syncData()">🔄 Синхронизировать</button>
 </div>
@@ -157,11 +166,29 @@ function renderStock(data) {
   if (!data.length) { document.getElementById("stock-table").innerHTML = "<div class='loading'>Склад пуст</div>"; return; }
   let rows = data.map(p => {
     const qty = p.stock_qty || 0;
-    const margin = p.sell_price ? Math.round((p.sell_price - p.cost_price) / p.sell_price * 100) : 0;
+    const costUsd = p.cost_price_usd || 0;
+    const costUah = p.cost_price_uah || 0;
+    const sellUsd = p.sell_price_usd || 0;
+    const sellUah = p.sell_price_uah || 0;
+    const margin = sellUsd && costUsd ? Math.round((sellUsd - costUsd) / sellUsd * 100) : 0;
     const badge = qty === 0 ? '<span class="badge red">0</span>' : qty <= 3 ? `<span class="badge yellow">${qty}</span>` : `<span class="badge green">${qty}</span>`;
-    return `<tr><td>${p.name}</td><td>${p.sku||''}</td><td>${badge}</td><td>${fmt(p.cost_price)}</td><td>${fmt(p.sell_price)}</td><td>${margin}%</td><td>${fmt((p.cost_price||0)*(p.stock_qty||0))}</td></tr>`;
+    const costCell = costUsd ? `$${costUsd} / ₴${costUah}` : '<span style="color:#ccc">—</span>';
+    const sellCell = sellUah ? `$${sellUsd} / ₴${sellUah}` : '<span style="color:#ccc">—</span>';
+    return `<tr>
+      <td>${p.name}</td>
+      <td>${p.sku||''}</td>
+      <td>${badge}</td>
+      <td>${costCell}</td>
+      <td>${sellCell}</td>
+      <td>${costUsd ? margin+'%' : '—'}</td>
+      <td>${costUsd ? '$'+((costUsd*qty).toFixed(2)) : '—'}</td>
+    </tr>`;
   }).join("");
-  document.getElementById("stock-table").innerHTML = `<table><thead><tr><th>Название</th><th>Артикул</th><th>Остаток</th><th>Себестоимость</th><th>Цена</th><th>Маржа</th><th>Сумма</th></tr></thead><tbody>${rows}</tbody></table>`;
+  document.getElementById("stock-table").innerHTML = `<table><thead><tr>
+    <th>Название</th><th>Артикул</th><th>Остаток</th>
+    <th>Цена прихода ($/₴)</th><th>Цена продажи ($/₴)</th>
+    <th>Маржа</th><th>Сумма склада</th>
+  </tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 function filterStock(q) {
@@ -215,7 +242,22 @@ async function syncData() {
   }
 }
 
+async function saveRate() {
+  const rate = parseFloat(document.getElementById("rate-input").value);
+  if (!rate || rate < 1) return alert("Введи корректный курс");
+  await fetch("/api/rate", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({rate})});
+  await loadStock();
+  document.querySelector(".rate-block button").textContent = "✅ Сохранено";
+  setTimeout(() => document.querySelector(".rate-block button").textContent = "Сохранить", 2000);
+}
+
+async function loadRate() {
+  const d = await fetch("/api/rate").then(r => r.json());
+  document.getElementById("rate-input").value = d.rate;
+}
+
 // Init
+loadRate();
 loadDashboard();
 loadStock();
 </script>

@@ -18,12 +18,12 @@ if not SUPABASE_URL:
     SUPABASE_KEY = cfg["supabase_service_key"]
 
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "kristallik2024")
-CURRENCY = "$"
 
-SB = {
-    "apikey": SUPABASE_KEY,
-    "Authorization": f"Bearer {SUPABASE_KEY}",
-}
+def _sb():
+    key = SUPABASE_KEY or ""
+    return {"apikey": key, "Authorization": f"Bearer {key}"}
+
+SB = property(_sb) if False else None  # replaced by _sb()
 
 app = FastAPI()
 security = HTTPBasic()
@@ -38,8 +38,30 @@ def auth(creds: HTTPBasicCredentials = Depends(security)):
 
 # ─── Supabase ─────────────────────────────────────────────────────────────────
 def sb(table, params=None):
-    r = httpx.get(f"{SUPABASE_URL}/rest/v1/{table}", headers=SB, params=params or {})
+    r = httpx.get(f"{SUPABASE_URL}/rest/v1/{table}", headers=_sb(), params=params or {})
     return r.json()
+
+def sb_post(table, data):
+    r = httpx.post(f"{SUPABASE_URL}/rest/v1/{table}",
+        headers={**_sb(), "Content-Type": "application/json", "Prefer": "return=representation"},
+        json=data)
+    return r.json()
+
+def sb_patch(table, match, data):
+    params = {k: f"eq.{v}" for k, v in match.items()}
+    r = httpx.patch(f"{SUPABASE_URL}/rest/v1/{table}",
+        headers={**_sb(), "Content-Type": "application/json", "Prefer": "return=minimal"},
+        params=params, json=data)
+    return r.status_code
+
+def get_exchange_rate() -> float:
+    try:
+        rows = sb("settings", {"key": "eq.exchange_rate", "limit": "1"})
+        if rows:
+            return float(rows[0]["value"])
+    except:
+        pass
+    return 41.5
 
 # ─── API endpoints ────────────────────────────────────────────────────────────
 @app.get("/api/dashboard")
@@ -96,11 +118,30 @@ def api_dashboard(user=Depends(auth)):
         "currency": CURRENCY,
     }
 
+@app.get("/api/rate")
+def api_get_rate(user=Depends(auth)):
+    return {"rate": get_exchange_rate()}
+
+@app.post("/api/rate")
+def api_set_rate(request: dict, user=Depends(auth)):
+    rate = float(request.get("rate", 41.5))
+    sb_patch("settings", {"key": "exchange_rate"}, {"value": str(rate)})
+    return {"rate": rate}
+
 @app.get("/api/stock")
 def api_stock(search: str = "", user=Depends(auth)):
+    rate = get_exchange_rate()
     products = sb("products", {"active": "eq.true", "order": "name.asc", "limit": "2000"})
     if search:
         products = [p for p in products if search.lower() in (p.get("name") or "").lower()]
+    # Добавляем цены в обеих валютах
+    for p in products:
+        cost_usd = p.get("cost_price") or 0
+        sell_uah = p.get("sell_price") or 0
+        p["cost_price_usd"] = cost_usd
+        p["cost_price_uah"] = round(cost_usd * rate, 2) if cost_usd else 0
+        p["sell_price_uah"] = sell_uah
+        p["sell_price_usd"] = round(sell_uah / rate, 2) if sell_uah else 0
     return products
 
 @app.get("/api/orders")
