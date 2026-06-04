@@ -6,13 +6,17 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
-# ─── Config ──────────────────────────────────────────────────────────────────
-CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "inventory-config.yaml")
-with open(CONFIG_PATH) as f:
-    cfg = yaml.safe_load(f)
+# ─── Config — env vars (Railway) or local yaml ───────────────────────────────
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
 
-SUPABASE_URL = cfg["supabase_url"]
-SUPABASE_KEY = cfg["supabase_service_key"]
+if not SUPABASE_URL:
+    CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "inventory-config.yaml")
+    with open(CONFIG_PATH) as f:
+        cfg = yaml.safe_load(f)
+    SUPABASE_URL = cfg["supabase_url"]
+    SUPABASE_KEY = cfg["supabase_service_key"]
+
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "kristallik2024")
 CURRENCY = "$"
 
