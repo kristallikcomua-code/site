@@ -23,7 +23,6 @@ def _sb():
     key = SUPABASE_KEY or ""
     return {"apikey": key, "Authorization": f"Bearer {key}"}
 
-SB = property(_sb) if False else None  # replaced by _sb()
 
 app = FastAPI()
 security = HTTPBasic()
