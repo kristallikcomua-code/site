@@ -6,15 +6,27 @@
 import yaml, httpx, requests
 from datetime import datetime
 
-with open("../google-ads-config.yaml") as f:
-    gads = yaml.safe_load(f)
-with open("../inventory-config.yaml") as f:
-    cfg = yaml.safe_load(f)
+import os
 
-SHEET_ID     = "129Ons2MWTQT4UE07iYu0T58zyGFt3PBLvj7Tcxt3nD4"
-SUPABASE_URL = cfg["supabase_url"]
-SUPABASE_KEY = cfg["supabase_service_key"]
+SHEET_ID     = os.environ.get("GOOGLE_SHEET_ID", "129Ons2MWTQT4UE07iYu0T58zyGFt3PBLvj7Tcxt3nD4")
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
+GOOGLE_CLIENT_ID     = os.environ.get("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
+GOOGLE_REFRESH_TOKEN = os.environ.get("GOOGLE_REFRESH_TOKEN")
 CURRENCY     = "$"
+
+if not SUPABASE_URL:
+    base = os.path.dirname(__file__)
+    with open(os.path.join(base, "..", "google-ads-config.yaml")) as f:
+        gads = yaml.safe_load(f)
+    with open(os.path.join(base, "..", "inventory-config.yaml")) as f:
+        cfg = yaml.safe_load(f)
+    SUPABASE_URL = cfg["supabase_url"]
+    SUPABASE_KEY = cfg["supabase_service_key"]
+    GOOGLE_CLIENT_ID     = gads["client_id"]
+    GOOGLE_CLIENT_SECRET = gads["client_secret"]
+    GOOGLE_REFRESH_TOKEN = gads["refresh_token"]
 
 SB_HEADERS = {
     "apikey": SUPABASE_KEY,
@@ -23,9 +35,9 @@ SB_HEADERS = {
 
 def get_token():
     r = requests.post("https://oauth2.googleapis.com/token", data={
-        "client_id": gads["client_id"],
-        "client_secret": gads["client_secret"],
-        "refresh_token": gads["refresh_token"],
+        "client_id": GOOGLE_CLIENT_ID,
+        "client_secret": GOOGLE_CLIENT_SECRET,
+        "refresh_token": GOOGLE_REFRESH_TOKEN,
         "grant_type": "refresh_token"
     })
     return r.json()["access_token"]

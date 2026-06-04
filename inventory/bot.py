@@ -21,14 +21,22 @@ import anthropic
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
 
-# ─── Config ───────────────────────────────────────────────────────────────────
-with open("inventory-config.yaml") as f:
-    cfg = yaml.safe_load(f)
+# ─── Config — env vars (Railway) or local yaml ───────────────────────────────
+BOT_TOKEN    = os.environ.get("TELEGRAM_BOT_TOKEN")
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
+AI_KEY       = os.environ.get("ANTHROPIC_API_KEY")
+MWEBBY_TOKEN = os.environ.get("MWEBBY_TOKEN")
 
-BOT_TOKEN    = cfg["telegram_bot_token"]
-SUPABASE_URL = cfg["supabase_url"]
-SUPABASE_KEY = cfg["supabase_service_key"]
-AI_KEY       = cfg["anthropic_api_key"]
+if not BOT_TOKEN:
+    config_path = os.path.join(os.path.dirname(__file__), "..", "inventory-config.yaml")
+    with open(config_path) as f:
+        cfg = yaml.safe_load(f)
+    BOT_TOKEN    = cfg["telegram_bot_token"]
+    SUPABASE_URL = cfg["supabase_url"]
+    SUPABASE_KEY = cfg["supabase_service_key"]
+    AI_KEY       = cfg["anthropic_api_key"]
+    MWEBBY_TOKEN = cfg.get("monsterwebby_token", "")
 
 claude = anthropic.Anthropic(api_key=AI_KEY)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
