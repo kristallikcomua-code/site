@@ -43,26 +43,28 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger(__name__)
 
 # ─── Supabase helpers ─────────────────────────────────────────────────────────
-HEADERS = {
-    "apikey": SUPABASE_KEY,
-    "Authorization": f"Bearer {SUPABASE_KEY}",
-    "Content-Type": "application/json",
-    "Prefer": "return=representation"
-}
+def _headers():
+    key = SUPABASE_KEY or ""
+    return {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "Prefer": "return=representation"
+    }
 
 def sb_get(table: str, params: dict = None):
-    r = httpx.get(f"{SUPABASE_URL}/rest/v1/{table}", headers=HEADERS, params=params)
+    r = httpx.get(f"{SUPABASE_URL}/rest/v1/{table}", headers=_headers(), params=params)
     r.raise_for_status()
     return r.json()
 
 def sb_post(table: str, data: dict):
-    r = httpx.post(f"{SUPABASE_URL}/rest/v1/{table}", headers=HEADERS, json=data)
+    r = httpx.post(f"{SUPABASE_URL}/rest/v1/{table}", headers=_headers(), json=data)
     r.raise_for_status()
     return r.json()
 
 def sb_patch(table: str, match: dict, data: dict):
     params = {k: f"eq.{v}" for k, v in match.items()}
-    r = httpx.patch(f"{SUPABASE_URL}/rest/v1/{table}", headers=HEADERS, params=params, json=data)
+    r = httpx.patch(f"{SUPABASE_URL}/rest/v1/{table}", headers=_headers(), params=params, json=data)
     r.raise_for_status()
     return r.json()
 
