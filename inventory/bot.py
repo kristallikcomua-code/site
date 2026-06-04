@@ -159,8 +159,10 @@ def format_invoice_preview(data: dict) -> str:
     lines.append("\nВсё правильно?")
     return "\n".join(lines)
 
-def invoice_keyboard(items: list) -> InlineKeyboardMarkup:
+def invoice_keyboard(items: list, inv_id: int = None) -> InlineKeyboardMarkup:
     """Кнопки: редактировать каждую позицию + подтвердить/отменить"""
+    confirm_data = f"invoice_confirm_{inv_id}" if inv_id else "invoice_confirm_0"
+    cancel_data  = f"invoice_cancel_{inv_id}"  if inv_id else "invoice_cancel_0"
     rows = []
     for i, item in enumerate(items):
         rows.append([InlineKeyboardButton(
@@ -168,10 +170,23 @@ def invoice_keyboard(items: list) -> InlineKeyboardMarkup:
             callback_data=f"edit_item_{i}"
         )])
     rows.append([
-        InlineKeyboardButton("✅ Подтвердить всё", callback_data="invoice_confirm"),
-        InlineKeyboardButton("❌ Отменить", callback_data="invoice_cancel"),
+        InlineKeyboardButton("✅ Подтвердить всё", callback_data=confirm_data),
+        InlineKeyboardButton("❌ Отменить", callback_data=cancel_data),
     ])
     return InlineKeyboardMarkup(rows)
+
+def save_draft_invoice(data: dict, source: str, file_id: str = None) -> int:
+    """Сохраняет накладную как черновик (confirmed=False), возвращает ID"""
+    inv = sb_post("invoices", {
+        "supplier": data.get("supplier"),
+        "invoice_date": data.get("date"),
+        "total_cost": data.get("total_cost"),
+        "raw_text": json.dumps(data, ensure_ascii=False),
+        "source": source,
+        "telegram_file_id": file_id,
+        "confirmed": False
+    })
+    return inv[0]["id"] if inv else None
 
 # ─── Handlers ─────────────────────────────────────────────────────────────────
 async def cmd_sync(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -294,13 +309,12 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     try:
         data = await parse_invoice_image(bytes(img_bytes))
-        ctx.user_data["pending_invoice"] = data
-        ctx.user_data["pending_source"] = "photo"
-        ctx.user_data["pending_file_id"] = photo.file_id
+        inv_id = save_draft_invoice(data, "photo", photo.file_id)
+        ctx.user_data[f"inv_{inv_id}"] = data
         await update.message.reply_text(
             format_invoice_preview(data),
             parse_mode="Markdown",
-            reply_markup=invoice_keyboard(data.get("items", []))
+            reply_markup=invoice_keyboard(data.get("items", []), inv_id)
         )
     except Exception as e:
         log.error(f"Photo parse error: {e}")
@@ -351,13 +365,13 @@ async def handle_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             data = await parse_invoice_text(text[:5000])
             source = "text"
 
-        ctx.user_data["pending_invoice"] = data
-        ctx.user_data["pending_source"] = source
+        inv_id = save_draft_invoice(data, source)
+        ctx.user_data[f"inv_{inv_id}"] = data
 
         await update.message.reply_text(
             format_invoice_preview(data),
             parse_mode="Markdown",
-            reply_markup=invoice_keyboard(data.get("items", []))
+            reply_markup=invoice_keyboard(data.get("items", []), inv_id)
         )
     except Exception as e:
         log.error(f"Doc parse error: {e}")
@@ -367,8 +381,11 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    if query.data == "invoice_cancel":
-        ctx.user_data.pop("pending_invoice", None)
+    if query.data.startswith("invoice_cancel_"):
+        inv_id = int(query.data.split("_")[-1])
+        if inv_id:
+            sb_patch("invoices", {"id": inv_id}, {"confirmed": False, "raw_text": "CANCELLED"})
+        ctx.user_data.pop(f"inv_{inv_id}", None)
         ctx.user_data.pop("editing_item", None)
         await query.edit_message_text("❌ Накладная отменена.")
         return
@@ -376,13 +393,24 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Редактирование позиции
     if query.data.startswith("edit_item_"):
         idx = int(query.data.split("_")[-1])
-        data = ctx.user_data.get("pending_invoice", {})
-        items = data.get("items", [])
+        # Ищем данные в user_data
+        inv_data = None
+        inv_id = None
+        for k, v in ctx.user_data.items():
+            if k.startswith("inv_"):
+                inv_data = v
+                inv_id = int(k.split("_")[1])
+                break
+        if not inv_data:
+            await query.answer("Данные не найдены, отправь накладную заново")
+            return
+        items = inv_data.get("items", [])
         if idx >= len(items):
             await query.answer("Позиция не найдена")
             return
         item = items[idx]
         ctx.user_data["editing_item"] = idx
+        ctx.user_data["editing_inv_id"] = inv_id
         await query.message.reply_text(
             f"✏️ *Редактирование позиции {idx+1}:*\n"
             f"Название: {item['name']}\n"
@@ -396,37 +424,37 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if query.data == "invoice_confirm":
-        data = ctx.user_data.pop("pending_invoice", None)
+    if query.data.startswith("invoice_confirm_"):
+        inv_id = int(query.data.split("_")[-1])
+
+        # Берём данные из user_data или из базы
+        data = ctx.user_data.pop(f"inv_{inv_id}", None)
         if not data:
-            await query.edit_message_text("❌ Данные не найдены, попробуй снова.")
-            return
+            # Восстанавливаем из Supabase
+            rows = sb_get("invoices", {"id": f"eq.{inv_id}", "limit": "1"})
+            if not rows:
+                await query.edit_message_text("❌ Накладная не найдена. Отправь снова.")
+                return
+            try:
+                data = json.loads(rows[0]["raw_text"])
+            except:
+                await query.edit_message_text("❌ Ошибка данных. Отправь накладную снова.")
+                return
 
-        # Сохранить накладную
-        inv = sb_post("invoices", {
-            "supplier": data.get("supplier"),
-            "invoice_date": data.get("date"),
-            "total_cost": data.get("total_cost"),
-            "raw_text": json.dumps(data, ensure_ascii=False),
-            "source": ctx.user_data.pop("pending_source", "manual"),
-            "telegram_file_id": ctx.user_data.pop("pending_file_id", None),
-            "confirmed": True
-        })
-        inv_id = inv[0]["id"] if inv else None
+        # Подтверждаем накладную
+        sb_patch("invoices", {"id": inv_id}, {"confirmed": True})
 
-        # Сохранить движения по каждой позиции
+        # Сохраняем движения
         saved = 0
         for item in data.get("items", []):
             if not item.get("name"):
                 continue
-            # Ищем товар в базе
             products = sb_get("products", {
                 "name": f"ilike.*{item['name'][:20]}*",
                 "limit": "1"
             })
             product_id = products[0]["id"] if products else None
 
-            # Если нашли — обновляем остаток
             if product_id:
                 prod = products[0]
                 new_qty = (prod.get("stock_qty") or 0) + (item.get("qty") or 0)
@@ -435,7 +463,6 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     "cost_price": item.get("cost_price") or prod.get("cost_price")
                 })
 
-            # Записываем движение
             sb_post("stock_movements", {
                 "product_id": product_id,
                 "product_name": item["name"],
@@ -446,13 +473,14 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             })
             saved += 1
 
-        # Автосинк с Sheets после сохранения
+        # Синк с Google Sheets
         try:
             import sync_sheets
             sync_sheets.run()
             sheets_note = "\n📊 Google Sheets обновлён"
         except Exception as e:
-            sheets_note = f"\n⚠️ Sheets: {e}"
+            log.error(f"Sheets sync error: {e}")
+            sheets_note = ""
 
         await query.edit_message_text(
             f"✅ Накладная сохранена!\n"
@@ -467,7 +495,8 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Редактирование позиции накладной
     if "editing_item" in ctx.user_data:
         idx = ctx.user_data.pop("editing_item")
-        data = ctx.user_data.get("pending_invoice", {})
+        inv_id = ctx.user_data.pop("editing_inv_id", None)
+        data = ctx.user_data.get(f"inv_{inv_id}", {}) if inv_id else {}
         items = data.get("items", [])
         if idx < len(items):
             parts = [p.strip() for p in text.split("|")]
@@ -488,11 +517,17 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 (i.get("total") or (i.get("cost_price",0) or 0) * (i.get("qty",0) or 0))
                 for i in items
             ), 2)
-            ctx.user_data["pending_invoice"] = data
+            if inv_id:
+                ctx.user_data[f"inv_{inv_id}"] = data
+                # Обновляем черновик в базе
+                sb_patch("invoices", {"id": inv_id}, {
+                    "raw_text": json.dumps(data, ensure_ascii=False),
+                    "total_cost": data["total_cost"]
+                })
             await update.message.reply_text(
                 f"✅ Позиция {idx+1} обновлена.\n\n" + format_invoice_preview(data),
                 parse_mode="Markdown",
-                reply_markup=invoice_keyboard(items)
+                reply_markup=invoice_keyboard(items, inv_id)
             )
         return
 
