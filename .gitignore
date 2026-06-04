@@ -1,0 +1,22 @@
+# Credentials — NEVER commit
+google-ads-config.yaml
+client_secret_*.json
+auth.py
+auth_sheets.py
+
+# Logs & generated data
+*.log
+*.json
+!schema-markup-example.json
+
+# Screenshots
+*.png
+*.jpg
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# OS
+.DS_Store

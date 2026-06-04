@@ -1,0 +1,46 @@
+# Robots.txt для kristallik.com.ua
+# Заміни example.com на kristallik.com.ua перед використанням
+
+User-agent: *
+Allow: /
+Disallow: /admin/
+Disallow: /api/
+Disallow: /cart/
+Disallow: /checkout/
+Disallow: /account/
+Disallow: /login/
+Disallow: /register/
+Disallow: /wishlist/
+Disallow: /compare/
+Disallow: /private/
+Disallow: /temp/
+
+# Дозволяємо доступ до важливих файлів
+Allow: /robots.txt
+Allow: /sitemap.xml
+Allow: /sitemap-products.xml
+
+# Пошукові системи
+User-agent: Googlebot
+Crawl-delay: 0
+
+User-agent: Bingbot
+Crawl-delay: 1
+
+User-agent: Yandexbot
+Crawl-delay: 1
+
+# Блокуємо небезпечні боти
+User-agent: AhrefsBot
+Disallow: /
+
+User-agent: MJ12bot
+Disallow: /
+
+# Sitemap
+Sitemap: https://kristallik.com.ua/sitemap.xml
+Sitemap: https://kristallik.com.ua/sitemap-products.xml
+Sitemap: https://kristallik.com.ua/sitemap-categories.xml
+
+# Запити на сканування
+Request-rate: 1/1s

@@ -1,0 +1,51 @@
+{
+  "@context": "https://schema.org/",
+  "@type": "Product",
+  "name": "Браслет на руку",
+  "description": "Браслет з бусин зі скла. 12шт в упаковці. Оптові ціни.",
+  "image": "https://cdn.gomw.co/b/product/1485/kdsd/gf54/dsc08721_710x533_crop_webp.JPG",
+  "sku": "Y21356",
+  "gtin": "Y21356",
+  "brand": {
+    "@type": "Brand",
+    "name": "Кристалік"
+  },
+  "offers": {
+    "@type": "AggregateOffer",
+    "priceCurrency": "UAH",
+    "price": "287.79",
+    "lowPrice": "287.79",
+    "highPrice": "287.79",
+    "offerCount": "1",
+    "availability": "https://schema.org/InStock"
+  },
+  "aggregateRating": {
+    "@type": "AggregateRating",
+    "ratingValue": "4.5",
+    "reviewCount": "42"
+  },
+  "review": [
+    {
+      "@type": "Review",
+      "reviewRating": {
+        "@type": "Rating",
+        "ratingValue": "5"
+      },
+      "author": {
+        "@type": "Person",
+        "name": "Марія К."
+      },
+      "reviewBody": "Чудовий товар, якісна доставка!"
+    }
+  ],
+  "weight": {
+    "@type": "QuantitativeValue",
+    "unitCode": "KGM",
+    "value": "0.02"
+  },
+  "url": "https://kristallik.com.ua/product/808/braslet-na-ruku/",
+  "category": "Hair Accessories",
+  "inLanguage": "uk-UA",
+  "datePublished": "2024-01-15",
+  "dateModified": "2026-03-09"
+}
