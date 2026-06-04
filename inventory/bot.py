@@ -385,11 +385,15 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if query.data.startswith("invoice_cancel_"):
         inv_id = int(query.data.split("_")[-1])
-        if inv_id:
-            sb_patch("invoices", {"id": inv_id}, {"confirmed": False, "raw_text": "CANCELLED"})
-        ctx.user_data.pop(f"inv_{inv_id}", None)
-        ctx.user_data.pop("editing_item", None)
-        await query.edit_message_text("❌ Накладная отменена.")
+        try:
+            if inv_id:
+                sb_patch("invoices", {"id": inv_id}, {"confirmed": False, "raw_text": "CANCELLED"})
+            ctx.user_data.pop(f"inv_{inv_id}", None)
+            ctx.user_data.pop("editing_item", None)
+            await query.edit_message_text("❌ Накладная отменена. Данные не сохранены.")
+        except Exception as e:
+            log.error(f"Cancel error: {e}")
+            await query.edit_message_text("❌ Накладная отменена.")
         return
 
     # Редактирование позиции
@@ -428,78 +432,96 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if query.data.startswith("invoice_confirm_"):
         inv_id = int(query.data.split("_")[-1])
+        await query.edit_message_text("⏳ Сохраняю накладную...")
 
-        # Берём данные из user_data или из базы
-        data = ctx.user_data.pop(f"inv_{inv_id}", None)
-        if not data:
-            # Восстанавливаем из Supabase
-            rows = sb_get("invoices", {"id": f"eq.{inv_id}", "limit": "1"})
-            if not rows:
-                await query.edit_message_text("❌ Накладная не найдена. Отправь снова.")
-                return
-            try:
-                data = json.loads(rows[0]["raw_text"])
-            except:
-                await query.edit_message_text("❌ Ошибка данных. Отправь накладную снова.")
-                return
-
-        # Подтверждаем накладную
-        sb_patch("invoices", {"id": inv_id}, {"confirmed": True})
-
-        # Сохраняем движения
-        saved = 0
-        for item in data.get("items", []):
-            if not item.get("name"):
-                continue
-            products = sb_get("products", {
-                "name": f"ilike.*{item['name'][:20]}*",
-                "limit": "1"
-            })
-            product_id = products[0]["id"] if products else None
-
-            if product_id:
-                prod = products[0]
-                new_qty = (prod.get("stock_qty") or 0) + (item.get("qty") or 0)
-                sb_patch("products", {"id": product_id}, {
-                    "stock_qty": new_qty,
-                    "cost_price": item.get("cost_price") or prod.get("cost_price")
-                })
-            else:
-                # Создаём новый товар автоматически
-                new_prod = sb_post("products", {
-                    "name": item["name"],
-                    "cost_price": item.get("cost_price"),
-                    "sell_price": round((item.get("cost_price") or 0) * 1.6, 2),
-                    "stock_qty": item.get("qty") or 0,
-                    "active": True
-                })
-                product_id = new_prod[0]["id"] if new_prod else None
-
-            sb_post("stock_movements", {
-                "product_id": product_id,
-                "product_name": item["name"],
-                "type": "in",
-                "qty": item.get("qty") or 0,
-                "cost_price": item.get("cost_price"),
-                "invoice_id": inv_id
-            })
-            saved += 1
-
-        # Синк с Google Sheets
         try:
-            import sync_sheets
-            sync_sheets.run()
-            sheets_note = "\n📊 Google Sheets обновлён"
+            # Берём данные из user_data или из базы
+            data = ctx.user_data.pop(f"inv_{inv_id}", None)
+            if not data:
+                rows = sb_get("invoices", {"id": f"eq.{inv_id}", "limit": "1"})
+                if not rows:
+                    await query.message.reply_text("❌ Накладная не найдена. Отправь снова.")
+                    return
+                try:
+                    data = json.loads(rows[0]["raw_text"])
+                except:
+                    await query.message.reply_text("❌ Ошибка данных накладной. Отправь снова.")
+                    return
         except Exception as e:
-            log.error(f"Sheets sync error: {e}")
-            sheets_note = ""
+            log.error(f"Confirm load error: {e}")
+            await query.message.reply_text(f"❌ Ошибка загрузки данных: {e}")
+            return
 
-        await query.edit_message_text(
-            f"✅ Накладная сохранена!\n"
-            f"📦 Записано позиций: {saved}\n"
-            f"🆔 ID накладной: {inv_id}{sheets_note}",
-            parse_mode="Markdown"
-        )
+        try:
+            # Подтверждаем накладную
+            sb_patch("invoices", {"id": inv_id}, {"confirmed": True})
+
+            # Сохраняем движения
+            saved = 0
+            new_products = 0
+            for item in data.get("items", []):
+                if not item.get("name"):
+                    continue
+                products = sb_get("products", {
+                    "name": f"ilike.*{item['name'][:20]}*",
+                    "limit": "1"
+                })
+                product_id = products[0]["id"] if products else None
+
+                if product_id:
+                    prod = products[0]
+                    new_qty = (prod.get("stock_qty") or 0) + (item.get("qty") or 0)
+                    sb_patch("products", {"id": product_id}, {
+                        "stock_qty": new_qty,
+                        "cost_price": item.get("cost_price") or prod.get("cost_price")
+                    })
+                else:
+                    new_prod = sb_post("products", {
+                        "name": item["name"],
+                        "cost_price": item.get("cost_price"),
+                        "sell_price": round((item.get("cost_price") or 0) * 1.6, 2),
+                        "stock_qty": item.get("qty") or 0,
+                        "active": True
+                    })
+                    product_id = new_prod[0]["id"] if new_prod else None
+                    new_products += 1
+
+                sb_post("stock_movements", {
+                    "product_id": product_id,
+                    "product_name": item["name"],
+                    "type": "in",
+                    "qty": item.get("qty") or 0,
+                    "cost_price": item.get("cost_price"),
+                    "invoice_id": inv_id
+                })
+                saved += 1
+
+            # Синк с Google Sheets
+            try:
+                import sync_sheets
+                sync_sheets.run()
+                sheets_note = "\n📊 Google Sheets обновлён"
+            except Exception as e:
+                log.error(f"Sheets sync error: {e}")
+                sheets_note = ""
+
+            new_note = f"\n🆕 Новых товаров создано: {new_products}" if new_products else ""
+
+            await query.message.reply_text(
+                f"✅ *Накладная #{inv_id} сохранена!*\n"
+                f"📦 Позиций записано: {saved}\n"
+                f"🏭 Поставщик: {data.get('supplier') or '—'}\n"
+                f"💰 Сумма: ${data.get('total_cost') or 0}"
+                f"{new_note}{sheets_note}",
+                parse_mode="Markdown"
+            )
+
+        except Exception as e:
+            log.error(f"Confirm save error: {e}")
+            await query.message.reply_text(
+                f"❌ Ошибка при сохранении накладной:\n`{e}`\n\nПопробуй ещё раз или напиши /start",
+                parse_mode="Markdown"
+            )
 
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
