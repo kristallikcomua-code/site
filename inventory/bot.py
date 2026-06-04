@@ -464,6 +464,16 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     "stock_qty": new_qty,
                     "cost_price": item.get("cost_price") or prod.get("cost_price")
                 })
+            else:
+                # Создаём новый товар автоматически
+                new_prod = sb_post("products", {
+                    "name": item["name"],
+                    "cost_price": item.get("cost_price"),
+                    "sell_price": round((item.get("cost_price") or 0) * 1.6, 2),
+                    "stock_qty": item.get("qty") or 0,
+                    "active": True
+                })
+                product_id = new_prod[0]["id"] if new_prod else None
 
             sb_post("stock_movements", {
                 "product_id": product_id,
