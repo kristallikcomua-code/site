@@ -15,8 +15,8 @@
 (function() {
   'use strict';
 
-  // Configuration - UPDATE THIS WITH YOUR N8N WEBHOOK URL
-  const WEBHOOK_URL = 'https://n8n.example.com/webhook/cart-events'; // ⚠️ Change this
+  // Webhook URL нашего дашборда на Railway
+  const WEBHOOK_URL = 'https://site-production-be6c.up.railway.app/api/webhook/order';
   const APP_KEY = 'kristallik_cart_tracker';
 
   /**
@@ -26,20 +26,16 @@
     const payload = {
       event: eventType,
       timestamp: new Date().toISOString(),
-      userAgent: navigator.userAgent,
       url: window.location.href,
       ...data
     };
 
-    // Use fetch if available, otherwise fall back to XMLHttpRequest
     if (typeof fetch !== 'undefined') {
       fetch(WEBHOOK_URL, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
-        mode: 'no-cors' // Allow cross-origin
+        mode: 'no-cors'
       }).catch(err => console.log('[Cart Tracker] Webhook error:', err.message));
     } else {
       // Fallback for older browsers
@@ -133,15 +129,47 @@
   }
 
   /**
-   * Track purchase
+   * Track purchase — отправляет данные заказа на наш webhook endpoint
    */
   function trackPurchase(orderId, cartData) {
-    sendToWebhook('purchase', {
-      orderId: orderId,
-      cart: cartData
-    });
+    const items = (cartData && cartData.items || []).map(i => ({
+      name: i.productName || i.name || '',
+      qty: i.quantity || i.qty || 1,
+      price: i.price || 0,
+    }));
+    // Отправляем в формате который ожидает /api/webhook/order
+    fetch(WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        order_id: orderId,
+        total: cartData && cartData.totalValue || 0,
+        items: items,
+      }),
+      mode: 'no-cors'
+    }).catch(err => console.log('[Cart Tracker] Order webhook error:', err.message));
 
-    console.log('[Cart Tracker] Purchase completed');
+    console.log('[Cart Tracker] Purchase sent to inventory:', orderId);
+  }
+
+  /**
+   * Автодетект страницы подтверждения заказа mWebby
+   * Срабатывает при загрузке thank-you / success страницы
+   */
+  function detectOrderConfirmation() {
+    const path = window.location.pathname;
+    if (!path.includes('/order') && !path.includes('/success') && !path.includes('/thank')) return;
+
+    // Пробуем вытащить order_id из URL или страницы
+    const idFromUrl = path.match(/\/(\d+)\/?$/);
+    const idFromPage = document.querySelector('[data-order-id]')?.dataset?.orderId
+      || document.querySelector('.order-number')?.textContent?.match(/\d+/)?.[0];
+    const orderId = (idFromUrl && idFromUrl[1]) || idFromPage;
+
+    if (orderId) {
+      const cartData = getCartData();
+      trackPurchase(orderId, cartData);
+    }
   }
 
   /**
@@ -175,9 +203,13 @@
 
   // Initialize on page load
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initializeTracking);
+    document.addEventListener('DOMContentLoaded', () => {
+      initializeTracking();
+      detectOrderConfirmation();
+    });
   } else {
     initializeTracking();
+    detectOrderConfirmation();
   }
 
   // Expose functions globally for manual tracking if needed

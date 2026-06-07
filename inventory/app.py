@@ -118,6 +118,107 @@ def api_dashboard(user=Depends(auth)):
         "currency": CURRENCY,
     }
 
+@app.post("/api/webhook/order")
+async def webhook_order(request: Request):
+    """
+    Webhook от Monster Webby при новом заказе.
+    Настроить в mWebby: Налаштування → Інтеграції → Webhook → URL = https://<домен>/api/webhook/order
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "invalid json"}, status_code=400)
+
+    site_order_id = str(
+        payload.get("order_id") or payload.get("id") or payload.get("number") or ""
+    ).strip()
+    if not site_order_id:
+        return JSONResponse({"ok": False, "error": "no order_id"}, status_code=422)
+
+    # Проверяем — не обрабатывали ли уже
+    existing = sb("orders", {"site_order_id": f"eq.{site_order_id}", "limit": "1"})
+    if existing:
+        return {"ok": True, "skipped": True}
+
+    # Пробуем получить полные данные заказа через mWebby API
+    MWEBBY_TOKEN = os.environ.get("MWEBBY_TOKEN", "")
+    MWEBBY_BASE  = os.environ.get("MWEBBY_BASE", "https://kristallik.mwebby.com/api/v1.0")
+    items_data = []
+    total_amount = float(payload.get("total") or payload.get("total_price") or 0)
+    customer_name  = payload.get("customer_name") or payload.get("name") or ""
+    customer_phone = payload.get("phone") or payload.get("customer_phone") or ""
+    status = payload.get("status") or "новий"
+
+    if MWEBBY_TOKEN:
+        try:
+            r = httpx.get(
+                f"{MWEBBY_BASE}/orders/{site_order_id}",
+                headers={"Authorization": f"Bearer {MWEBBY_TOKEN}"},
+                timeout=10
+            )
+            if r.status_code == 200:
+                api_order = r.json()
+                total_amount   = float(api_order.get("total") or total_amount)
+                customer_name  = api_order.get("customer_name") or customer_name
+                customer_phone = api_order.get("phone") or customer_phone
+                status         = api_order.get("status") or status
+                items_data     = api_order.get("items") or api_order.get("products") or []
+        except Exception:
+            pass  # fallback to payload data
+
+    # Если API не вернул items — берём из payload напрямую
+    if not items_data:
+        items_data = payload.get("items") or payload.get("products") or []
+
+    # Сохраняем заказ
+    order_row = sb_post("orders", {
+        "site_order_id": site_order_id,
+        "order_date": payload.get("created_at") or __import__("datetime").datetime.now().isoformat(),
+        "total_amount": total_amount,
+        "customer_name": customer_name,
+        "customer_phone": customer_phone,
+        "status": status,
+    })
+    order_db_id = order_row[0]["id"] if order_row else None
+
+    # Сохраняем позиции и списываем склад
+    for item in items_data:
+        name  = item.get("name") or item.get("product_name") or ""
+        qty   = int(item.get("qty") or item.get("quantity") or 0)
+        price = float(item.get("price") or item.get("sell_price") or 0)
+        if not name or qty == 0:
+            continue
+
+        products = sb("products", {"name": f"ilike.*{name[:25]}*", "limit": "1"})
+        prod = products[0] if products else None
+        prod_id    = prod["id"] if prod else None
+        cost_price = prod.get("cost_price", 0) if prod else 0
+
+        if order_db_id:
+            sb_post("order_items", {
+                "order_id": order_db_id,
+                "product_id": prod_id,
+                "product_name": name,
+                "qty": qty,
+                "sell_price": price,
+                "cost_price": cost_price,
+            })
+
+        if prod_id:
+            new_qty = max(0, (prod.get("stock_qty") or 0) - qty)
+            sb_patch("products", {"id": prod_id}, {"stock_qty": new_qty})
+            sb_post("stock_movements", {
+                "product_id": prod_id,
+                "product_name": name,
+                "type": "out",
+                "qty": qty,
+                "sell_price": price,
+                "cost_price": cost_price,
+                "order_id": site_order_id,
+            })
+
+    return {"ok": True, "order_id": site_order_id, "items_processed": len(items_data)}
+
 @app.get("/api/rate")
 def api_get_rate(user=Depends(auth)):
     return {"rate": get_exchange_rate()}
