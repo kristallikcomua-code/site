@@ -146,8 +146,8 @@ def api_stock(search: str = "", user=Depends(auth)):
 
 @app.get("/api/orders")
 def api_orders(user=Depends(auth)):
-    orders = sb("orders", {"order": "order_date.desc", "limit": "500"})
-    return orders
+    return sb("orders", {"order": "order_date.desc", "limit": "500",
+                         "select": "id,site_order_id,order_date,total_amount,customer_name,customer_phone,status"})
 
 @app.get("/api/expenses")
 def api_expenses(user=Depends(auth)):
@@ -156,6 +156,61 @@ def api_expenses(user=Depends(auth)):
 @app.get("/api/movements")
 def api_movements(user=Depends(auth)):
     return sb("stock_movements", {"order": "created_at.desc", "limit": "200"})
+
+@app.get("/api/customers")
+def api_customers(search: str = "", user=Depends(auth)):
+    customers = sb("customers", {"order": "total_spent.desc", "limit": "500",
+                                  "select": "id,name,phone,orders_count,total_spent,last_order_date"})
+    if search:
+        customers = [c for c in customers
+                     if search.lower() in (c.get("name") or "").lower()
+                     or search in (c.get("phone") or "")]
+    return customers
+
+@app.get("/api/together")
+def api_together(user=Depends(auth)):
+    """Топ пар товаров купленных вместе"""
+    items = sb("order_items", {"limit": "10000", "select": "order_id,product_name"})
+    from collections import defaultdict, Counter
+    order_products = defaultdict(set)
+    for i in items:
+        if i.get("product_name") and i.get("order_id"):
+            order_products[i["order_id"]].add(i["product_name"])
+    pairs = Counter()
+    for prods in order_products.values():
+        prods = list(prods)
+        for i in range(len(prods)):
+            for j in range(i+1, len(prods)):
+                pair = tuple(sorted([prods[i][:30], prods[j][:30]]))
+                pairs[pair] += 1
+    top_pairs = [{"a": p[0], "b": p[1], "count": c}
+                 for p, c in pairs.most_common(15) if c >= 2]
+    return top_pairs
+
+@app.patch("/api/products/{product_id}/sku")
+def api_update_sku(product_id: int, request: dict, user=Depends(auth)):
+    sku = request.get("sku", "").strip()
+    status = sb_patch("products", {"id": product_id}, {"sku": sku or None})
+    return {"ok": status < 300}
+
+@app.get("/api/top_products")
+def api_top_products(user=Depends(auth)):
+    rate = get_exchange_rate()
+    items = sb("order_items", {"limit": "10000", "select": "product_name,qty,sell_price,cost_price"})
+    from collections import defaultdict
+    stats = defaultdict(lambda: {"qty": 0, "revenue": 0.0, "orders": 0})
+    for i in items:
+        n = i.get("product_name") or "?"
+        q = i.get("qty") or 0
+        sp = i.get("sell_price") or 0
+        stats[n]["qty"] += q
+        stats[n]["revenue"] += sp * q
+        stats[n]["orders"] += 1
+    top = sorted(stats.items(), key=lambda x: x[1]["revenue"], reverse=True)[:20]
+    return [{"name": n, "qty": s["qty"],
+             "revenue_uah": round(s["revenue"], 2),
+             "revenue_usd": round(s["revenue"] / rate, 2),
+             "orders": s["orders"]} for n, s in top]
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request, user=Depends(auth)):

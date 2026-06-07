@@ -69,6 +69,16 @@ def sb_patch(table: str, match: dict, data: dict):
     return r.json()
 
 # ─── AI parsing ───────────────────────────────────────────────────────────────
+STOCKCOUNT_PROMPT = """Ти помічник з обліку складу.
+Проаналізуй фото і визнач кількість кожного виду товару що видно.
+Поверни тільки JSON, без пояснень:
+{
+  "items": [
+    {"name": "назва товару", "qty": кількість_число}
+  ]
+}
+Якщо кількість не видно — постав null. Назви пиши як на упаковці чи ярлику."""
+
 INVOICE_PROMPT = """Ты помощник по учёту склада.
 Проанализируй накладную и верни JSON со списком товаров.
 
@@ -90,6 +100,23 @@ INVOICE_PROMPT = """Ты помощник по учёту склада.
 Если что-то непонятно — поставь null. Все числа без знака валюты (только цифры)."""
 
 CURRENCY = "$"
+
+async def parse_stockcount_image(image_bytes: bytes, mime: str = "image/jpeg") -> dict:
+    b64 = base64.standard_b64encode(image_bytes).decode()
+    msg = claude.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=1000,
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": mime, "data": b64}},
+                {"type": "text", "text": STOCKCOUNT_PROMPT}
+            ]
+        }]
+    )
+    raw = msg.content[0].text.strip()
+    raw = re.sub(r"^```json\s*|^```\s*|\s*```$", "", raw, flags=re.MULTILINE).strip()
+    return json.loads(raw)
 
 async def parse_invoice_image(image_bytes: bytes, mime: str = "image/jpeg") -> dict:
     b64 = base64.standard_b64encode(image_bytes).decode()
@@ -191,6 +218,45 @@ def save_draft_invoice(data: dict, source: str, file_id: str = None) -> int:
     return inv[0]["id"] if inv else None
 
 # ─── Handlers ─────────────────────────────────────────────────────────────────
+async def cmd_find(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query_text = " ".join(ctx.args) if ctx.args else ""
+    if not query_text:
+        await update.message.reply_text("Введи: `/find назва або артикул`", parse_mode="Markdown")
+        return
+    await update.message.reply_text(f"🔍 Шукаю: *{query_text}*...", parse_mode="Markdown")
+
+    # Search by name or SKU
+    by_name = sb_get("products", {"name": f"ilike.*{query_text}*", "limit": "5"})
+    by_sku  = sb_get("products", {"sku": f"ilike.*{query_text}*", "limit": "5"})
+
+    found = {p["id"]: p for p in (by_name + by_sku)}.values()
+
+    if not found:
+        await update.message.reply_text(f"❌ Нічого не знайдено за запитом *{query_text}*", parse_mode="Markdown")
+        return
+
+    found_list = list(found)[:5]
+    lines = [f"🔍 *Результати пошуку: {query_text}*\n"]
+    buttons = []
+    for p in found_list:
+        qty = p.get("stock_qty") or 0
+        cost = p.get("cost_price") or 0
+        sell = p.get("sell_price") or 0
+        status = "🟢 є" if qty > 3 else ("🟡 мало" if qty > 0 else "🔴 нема")
+        lines.append(
+            f"📦 *{p['name']}*\n"
+            f"   Артикул: `{p.get('sku') or '—'}`\n"
+            f"   Залишок: {qty} шт {status}\n"
+            f"   Ціна приходу: ${cost}\n"
+            f"   Ціна продажу: ${round(sell/41.5,2) if sell else '—'} / ₴{sell}\n"
+        )
+        buttons.append([InlineKeyboardButton(
+            f"✏️ Артикул: {p['name'][:25]}",
+            callback_data=f"set_sku_{p['id']}"
+        )])
+    kb = InlineKeyboardMarkup(buttons) if buttons else None
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=kb)
+
 async def cmd_sync(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔄 Синхронизирую...")
     try:
@@ -203,15 +269,17 @@ async def cmd_sync(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = (
-        "👋 *Учёт склада Кристаллик*\n\n"
-        "Отправь мне:\n"
-        "📷 Фото/PDF/Excel накладной\n\n"
-        "Команды:\n"
-        "/stock — остатки на складе\n"
-        "/top — топ товаров\n"
-        "/report — отчёт\n"
-        "/expense — записать расход\n"
-        "/sync — синхронизировать сайт и Sheets"
+        "👋 *Облік складу Кристаллик*\n\n"
+        "Надішли фото:\n"
+        "📦 Накладна — оновить залишки + запише прихід\n"
+        "📊 Перерахунок — встановить поточну кількість\n\n"
+        "Команди:\n"
+        "/stock — залишки на складі\n"
+        "/find краб — пошук товару + зміна артикулу\n"
+        "/top — топ товарів\n"
+        "/report — звіт\n"
+        "/expense — записати витрату\n"
+        "/sync — синхронізувати сайт і Sheets"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
@@ -304,23 +372,13 @@ async def cmd_expense(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["awaiting_expense"] = True
 
 async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📷 Обрабатываю фото накладной...")
     photo = update.message.photo[-1]
-    file = await ctx.bot.get_file(photo.file_id)
-    img_bytes = await file.download_as_bytearray()
-
-    try:
-        data = await parse_invoice_image(bytes(img_bytes))
-        inv_id = save_draft_invoice(data, "photo", photo.file_id)
-        ctx.user_data[f"inv_{inv_id}"] = data
-        await update.message.reply_text(
-            format_invoice_preview(data),
-            parse_mode="Markdown",
-            reply_markup=invoice_keyboard(data.get("items", []), inv_id)
-        )
-    except Exception as e:
-        log.error(f"Photo parse error: {e}")
-        await update.message.reply_text(f"❌ Не удалось распознать: {e}")
+    ctx.user_data["pending_photo_file_id"] = photo.file_id
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("📦 Накладна (прихід)", callback_data="mode_invoice"),
+        InlineKeyboardButton("📊 Перерахунок залишків", callback_data="mode_stockcount"),
+    ]])
+    await update.message.reply_text("Що на фото?", reply_markup=kb)
 
 async def handle_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
@@ -382,6 +440,108 @@ async def handle_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+
+    # ── Вибір режиму фото ──────────────────────────────────────────────────────
+    if query.data in ("mode_invoice", "mode_stockcount"):
+        file_id = ctx.user_data.pop("pending_photo_file_id", None)
+        if not file_id:
+            await query.edit_message_text("❌ Фото не знайдено, надішли ще раз.")
+            return
+        file = await ctx.bot.get_file(file_id)
+        img_bytes = bytes(await file.download_as_bytearray())
+
+        if query.data == "mode_invoice":
+            await query.edit_message_text("📷 Обробляю накладну...")
+            try:
+                data = await parse_invoice_image(img_bytes)
+                inv_id = save_draft_invoice(data, "photo", file_id)
+                ctx.user_data[f"inv_{inv_id}"] = data
+                await query.message.reply_text(
+                    format_invoice_preview(data),
+                    parse_mode="Markdown",
+                    reply_markup=invoice_keyboard(data.get("items", []), inv_id)
+                )
+            except Exception as e:
+                log.error(f"Photo invoice error: {e}")
+                await query.message.reply_text(f"❌ Не вдалось розпізнати: {e}")
+
+        else:  # mode_stockcount
+            await query.edit_message_text("📊 Рахую залишки на фото...")
+            try:
+                data = await parse_stockcount_image(img_bytes)
+                items = data.get("items", [])
+                if not items:
+                    await query.message.reply_text("❌ Не вдалось визначити товари на фото.")
+                    return
+                # Зберігаємо у user_data
+                ctx.user_data["stockcount_items"] = items
+                lines = ["📊 *Перерахунок залишків*\n"]
+                for i, it in enumerate(items, 1):
+                    qty = it.get("qty")
+                    lines.append(f"{i}. {it['name']} — *{qty if qty is not None else '?'} шт*")
+                lines.append("\nОновити залишки в базі?")
+                kb = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("✅ Підтвердити", callback_data="stockcount_confirm"),
+                    InlineKeyboardButton("❌ Скасувати", callback_data="stockcount_cancel"),
+                ]])
+                await query.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=kb)
+            except Exception as e:
+                log.error(f"Stockcount error: {e}")
+                await query.message.reply_text(f"❌ Помилка: {e}")
+        return
+
+    # ── Підтвердження перерахунку залишків ────────────────────────────────────
+    if query.data == "stockcount_confirm":
+        items = ctx.user_data.pop("stockcount_items", [])
+        if not items:
+            await query.edit_message_text("❌ Дані не знайдено, надішли фото ще раз.")
+            return
+        await query.edit_message_text("⏳ Оновлюю залишки...")
+        updated, skipped = 0, 0
+        for item in items:
+            if item.get("qty") is None:
+                skipped += 1
+                continue
+            products = sb_get("products", {"name": f"ilike.*{item['name'][:20]}*", "limit": "1"})
+            if products:
+                sb_patch("products", {"id": products[0]["id"]}, {"stock_qty": item["qty"]})
+                sb_post("stock_movements", {
+                    "product_id": products[0]["id"],
+                    "product_name": item["name"],
+                    "type": "stockcount",
+                    "qty": item["qty"],
+                    "cost_price": products[0].get("cost_price"),
+                })
+                updated += 1
+            else:
+                skipped += 1
+        await query.message.reply_text(
+            f"✅ *Залишки оновлено!*\n📦 Оновлено: {updated}\n⚠️ Не знайдено: {skipped}",
+            parse_mode="Markdown"
+        )
+        return
+
+    if query.data == "stockcount_cancel":
+        ctx.user_data.pop("stockcount_items", None)
+        await query.edit_message_text("❌ Перерахунок скасовано.")
+        return
+
+    # ── Встановлення артикулу ──────────────────────────────────────────────────
+    if query.data.startswith("set_sku_"):
+        product_id = int(query.data.split("_")[-1])
+        products = sb_get("products", {"id": f"eq.{product_id}", "limit": "1"})
+        if not products:
+            await query.answer("Товар не знайдено")
+            return
+        p = products[0]
+        ctx.user_data["awaiting_sku_product_id"] = product_id
+        await query.message.reply_text(
+            f"✏️ *{p['name']}*\n"
+            f"Поточний артикул: `{p.get('sku') or '—'}`\n\n"
+            f"Введи новий артикул:",
+            parse_mode="Markdown"
+        )
+        return
 
     if query.data.startswith("invoice_cancel_"):
         inv_id = int(query.data.split("_")[-1])
@@ -526,6 +686,17 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
+    # Встановлення артикулу
+    if "awaiting_sku_product_id" in ctx.user_data:
+        product_id = ctx.user_data.pop("awaiting_sku_product_id")
+        sku = text.strip()
+        try:
+            sb_patch("products", {"id": product_id}, {"sku": sku or None})
+            await update.message.reply_text(f"✅ Артикул збережено: `{sku}`", parse_mode="Markdown")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Помилка: {e}")
+        return
+
     # Редактирование позиции накладной
     if "editing_item" in ctx.user_data:
         idx = ctx.user_data.pop("editing_item")
@@ -607,6 +778,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("find", cmd_find))
     app.add_handler(CommandHandler("sync", cmd_sync))
     app.add_handler(CommandHandler("stock", cmd_stock))
     app.add_handler(CommandHandler("top", cmd_top))

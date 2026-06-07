@@ -45,6 +45,9 @@
   .badge.red { background: #fdecea; color: #e74c3c; }
   .loading { text-align: center; padding: 40px; color: #888; }
   .updated { font-size: 12px; color: #aaa; }
+  .sku-cell { cursor: pointer; border-bottom: 1px dashed #aaa; padding: 1px 2px; min-width: 60px; display: inline-block; }
+  .sku-cell:hover { background: #f0f7ff; border-color: #3498db; }
+  .sku-input { width: 100px; padding: 2px 6px; border: 1px solid #3498db; border-radius: 4px; font-size: 14px; outline: none; }
   @media (max-width: 768px) { .charts-grid { grid-template-columns: 1fr; } }
 </style>
 </head>
@@ -85,20 +88,40 @@
   <div class="card">
     <div class="tabs">
       <button class="tab active" onclick="showTab('stock')">📦 Склад</button>
+      <button class="tab" onclick="showTab('top')">🏆 Топ товаров</button>
+      <button class="tab" onclick="showTab('together')">🔗 Покупают вместе</button>
       <button class="tab" onclick="showTab('orders')">🛒 Заказы</button>
+      <button class="tab" onclick="showTab('customers')">👥 Покупатели</button>
       <button class="tab" onclick="showTab('expenses')">🧾 Расходы</button>
       <button class="tab" onclick="showTab('movements')">📋 Движения</button>
     </div>
 
     <!-- Stock -->
     <div id="tab-stock">
-      <input class="search-bar" placeholder="Поиск товара..." oninput="filterStock(this.value)" />
+      <input class="search-bar" placeholder="Поиск по названию или артикулу..." oninput="filterStock(this.value)" />
       <div id="stock-table"><div class="loading">Загрузка...</div></div>
+    </div>
+
+    <!-- Top products -->
+    <div id="tab-top" style="display:none">
+      <div id="top-table"><div class="loading">Загрузка...</div></div>
+    </div>
+
+    <!-- Bought together -->
+    <div id="tab-together" style="display:none">
+      <div id="together-table"><div class="loading">Загрузка...</div></div>
     </div>
 
     <!-- Orders -->
     <div id="tab-orders" style="display:none">
+      <input class="search-bar" placeholder="Поиск по имени или телефону..." oninput="filterOrders(this.value)" />
       <div id="orders-table"><div class="loading">Загрузка...</div></div>
+    </div>
+
+    <!-- Customers -->
+    <div id="tab-customers" style="display:none">
+      <input class="search-bar" placeholder="Поиск покупателя..." oninput="filterCustomers(this.value)" />
+      <div id="customers-table"><div class="loading">Загрузка...</div></div>
     </div>
 
     <!-- Expenses -->
@@ -174,9 +197,11 @@ function renderStock(data) {
     const badge = qty === 0 ? '<span class="badge red">0</span>' : qty <= 3 ? `<span class="badge yellow">${qty}</span>` : `<span class="badge green">${qty}</span>`;
     const costCell = costUsd ? `$${costUsd} / ₴${costUah}` : '<span style="color:#ccc">—</span>';
     const sellCell = sellUah ? `$${sellUsd} / ₴${sellUah}` : '<span style="color:#ccc">—</span>';
+    const skuVal = p.sku || '';
+    const skuCell = `<span class="sku-cell" data-id="${p.id}" onclick="editSku(this)" title="Нажми чтобы редактировать">${skuVal || '<span style="color:#ccc">—</span>'}</span>`;
     return `<tr>
       <td>${p.name}</td>
-      <td>${p.sku||''}</td>
+      <td>${skuCell}</td>
       <td>${badge}</td>
       <td>${costCell}</td>
       <td>${sellCell}</td>
@@ -254,6 +279,43 @@ async function saveRate() {
 async function loadRate() {
   const d = await fetch("/api/rate").then(r => r.json());
   document.getElementById("rate-input").value = d.rate;
+}
+
+function editSku(span) {
+  if (span.querySelector("input")) return;
+  const id = span.dataset.id;
+  const current = span.textContent.trim() === "—" ? "" : span.textContent.trim();
+  const input = document.createElement("input");
+  input.className = "sku-input";
+  input.value = current;
+  span.innerHTML = "";
+  span.appendChild(input);
+  input.focus();
+
+  async function save() {
+    const newVal = input.value.trim();
+    const res = await fetch(`/api/products/${id}/sku`, {
+      method: "PATCH",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({sku: newVal})
+    });
+    const data = await res.json();
+    if (data.ok) {
+      // обновляем в allStock
+      const prod = allStock.find(p => p.id == id);
+      if (prod) prod.sku = newVal || null;
+      span.innerHTML = newVal || '<span style="color:#ccc">—</span>';
+    } else {
+      span.innerHTML = current || '<span style="color:#ccc">—</span>';
+      alert("Ошибка сохранения");
+    }
+  }
+
+  input.addEventListener("keydown", e => {
+    if (e.key === "Enter") { input.blur(); }
+    if (e.key === "Escape") { span.innerHTML = current || '<span style="color:#ccc">—</span>'; }
+  });
+  input.addEventListener("blur", save);
 }
 
 // Init
