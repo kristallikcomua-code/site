@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, yaml, httpx, secrets
+import os, yaml, httpx, secrets, asyncio, logging
 from fastapi import FastAPI, Request, Depends, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -316,6 +316,27 @@ def api_top_products(user=Depends(auth)):
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request, user=Depends(auth)):
     return templates.TemplateResponse("index.html", {"request": request, "currency": CURRENCY})
+
+log = logging.getLogger(__name__)
+
+async def _auto_sync():
+    """Автосинхронизация заказов каждые 30 минут."""
+    await asyncio.sleep(60)  # первый запуск через 1 мин после старта
+    while True:
+        try:
+            import sys
+            sys.path.insert(0, os.path.dirname(__file__))
+            import sync_site
+            new = sync_site.sync_orders()
+            if new:
+                log.info(f"Auto-sync: {new} новых заказов")
+        except Exception as e:
+            log.error(f"Auto-sync error: {e}")
+        await asyncio.sleep(30 * 60)  # каждые 30 минут
+
+@app.on_event("startup")
+async def startup():
+    asyncio.create_task(_auto_sync())
 
 if __name__ == "__main__":
     import uvicorn
