@@ -52,8 +52,9 @@ def clean(text):
 def sync_orders():
     """Тянем последние заказы с сайта, сохраняем новые"""
     session = requests.Session()
-    r = session.post(f"{MW_SITE}/admin/login/", data={
-        "login": "vitalya397@gmail.com",
+    r = session.post(f"{MW_SITE}/admin/", data={
+        "fn": "login",
+        "email": "vitalya397@gmail.com",
         "password": "g7ce3"
     })
 
