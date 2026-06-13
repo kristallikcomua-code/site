@@ -18,7 +18,7 @@ if not SUPABASE_URL:
     SUPABASE_KEY = cfg["supabase_service_key"]
 
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "kristallik2024")
-CURRENCY = "$"
+CURRENCY = "₴"
 
 def _sb():
     key = SUPABASE_KEY or ""

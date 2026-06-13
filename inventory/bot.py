@@ -115,7 +115,7 @@ INVOICE_PROMPT = """Ты помощник по учёту склада.
 
 Если что-то непонятно — поставь null. Все числа без знака валюты (только цифры)."""
 
-CURRENCY = "$"
+CURRENCY = "₴"
 
 async def parse_find_by_photo(image_bytes: bytes, mime: str = "image/jpeg") -> dict:
     b64 = base64.standard_b64encode(image_bytes).decode()
