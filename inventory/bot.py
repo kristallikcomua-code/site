@@ -570,7 +570,13 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         "\n".join(info_lines), parse_mode="Markdown", reply_markup=kb
                     )
                 else:
-                    info_lines.append("❌ *В базі не знайдено.*\nСпробуй /find з назвою вручну.")
+                    info_lines.append(
+                        "❌ *Товар не знайдено в базі.*\n\n"
+                        "Це означає що:\n"
+                        "• Товару ще немає на сайті kristallik.com.ua\n"
+                        "• Або він є, але під іншою назвою\n\n"
+                        f"Спробуй: /find {search_q}"
+                    )
                     await query.message.reply_text("\n".join(info_lines), parse_mode="Markdown")
 
             except Exception as e:
