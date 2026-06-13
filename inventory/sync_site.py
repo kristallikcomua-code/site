@@ -49,98 +49,91 @@ def clean(text):
     return ' '.join(text.split()).strip()
 
 # ─── Синк заказов ────────────────────────────────────────────────────────────
+def _parse_orders_html(html):
+    """Парсит список заказов из HTML страницы mWebby."""
+    orders = []
+    # Разбиваем на строки таблицы по чекбоксу с ID заказа
+    chunks = re.split(r'(?=<input[^>]*class="js-ch-item"[^>]*value="(\d+)")', html)
+    for chunk in chunks:
+        oid_match = re.search(r'class="js-ch-item"[^>]*value="(\d+)"', chunk)
+        if not oid_match:
+            continue
+        oid = oid_match.group(1)
+
+        # Дата
+        date_match = re.search(r'(\d{1,2})\s+(\S+)\s+(\d{4})\s+(\d{2}:\d{2})', chunk)
+        order_date = datetime.now().isoformat()
+        if date_match:
+            months = {'Января':'01','Февраля':'02','Марта':'03','Апреля':'04',
+                      'Мая':'05','Июня':'06','Июля':'07','Августа':'08',
+                      'Сентября':'09','Октября':'10','Ноября':'11','Декабря':'12'}
+            m = months.get(date_match.group(2), '01')
+            order_date = f"{date_match.group(3)}-{m}-{date_match.group(1).zfill(2)}T{date_match.group(4)}:00"
+
+        # Покупатель (имя + телефон) — в td после td со статусом
+        customer_name = ""
+        customer_phone = ""
+        # Ім'я — перший текст в td що містить телефон
+        cust_td = re.search(r'<td>\s*([^<\n]+?)\s*<br>\s*(\+?[\d]{10,13})', chunk)
+        if cust_td:
+            customer_name = cust_td.group(1).strip()
+            customer_phone = cust_td.group(2).strip()
+        else:
+            phone_match = re.search(r'(\+?380\d{9}|\+?[0-9]{10,13})', chunk)
+            if phone_match:
+                customer_phone = phone_match.group(1)
+
+        # Сумма
+        price_match = re.search(r'class="price bold">([\d\s,\.]+)\s*грн', chunk)
+        total = 0.0
+        if price_match:
+            total = float(re.sub(r'[^\d,\.]', '', price_match.group(1)).replace(',', '.') or 0)
+
+        # Статус
+        status_match = re.search(r'class="label[^"]*">\s*(.*?)\s*</span>', chunk)
+        status = clean(status_match.group(1)) if status_match else "новый"
+
+        orders.append({
+            "site_order_id": oid,
+            "order_date": order_date,
+            "customer_name": customer_name,
+            "customer_phone": customer_phone,
+            "total_amount": total,
+            "status": status,
+        })
+    return orders
+
 def sync_orders():
     """Тянем последние заказы с сайта, сохраняем новые"""
     session = requests.Session()
-    r = session.post(f"{MW_SITE}/admin/", data={
+    session.post(f"{MW_SITE}/admin/", data={
         "fn": "login",
         "email": "vitalya397@gmail.com",
         "password": "g7ce3"
     })
 
-    # Берём страницу 1 (последние заказы)
     r = session.get(f"{MW_SITE}/admin/orders/", params={"per_page": 50})
-    html = r.text
-
-    order_ids = re.findall(r'class="js-ch-item"[^>]*value="(\d+)"', html)
+    orders = _parse_orders_html(r.text)
     new_count = 0
 
-    for oid in order_ids:
-        # Проверяем есть ли уже в базе
+    for o in orders:
+        oid = o["site_order_id"]
         existing = sb_get("orders", {"site_order_id": f"eq.{oid}", "limit": "1"})
         if existing:
+            # Оновлюємо статус якщо змінився
+            if existing[0].get("status") != o["status"] and o["status"]:
+                sb_patch("orders", {"site_order_id": oid}, {"status": o["status"]})
             continue
 
-        # Парсим детали заказа
-        panels = re.split(r'<tr class="hide-table-tr hide">', html)
-        order_idx = order_ids.index(oid)
-        if order_idx + 1 < len(panels):
-            panel = panels[order_idx + 1]
-
-            # Парсим блок заказа
-            tds = re.findall(r'<td[^>]*>(.*?)</td>', html[:html.find(f'value="{oid}"') + 500], re.DOTALL)
-
-            # Сохраняем заказ
-            order_row = sb_post("orders", {
-                "site_order_id": oid,
-                "order_date": datetime.now().isoformat(),
-                "status": "новый"
-            })
-            order_db_id = order_row[0]["id"] if order_row else None
-
-            # Парсим товары из панели
-            tr_parts = re.split(r'<tr[^>]*>', panel)
-            for part in tr_parts:
-                tds_p = re.findall(r'<td[^>]*>(.*?)</td>', part, re.DOTALL)
-                if len(tds_p) < 3:
-                    continue
-                td_texts = [clean(td) for td in tds_p]
-                # Ищем строку с товаром (есть цена в грн)
-                name = td_texts[0] if td_texts else ""
-                qty_str = td_texts[1] if len(td_texts) > 1 else "0"
-                price_str = td_texts[2] if len(td_texts) > 2 else "0"
-
-                try:
-                    qty = int(re.sub(r'[^\d]', '', qty_str) or 0)
-                    price = float(re.sub(r'[^\d.,]', '', price_str).replace(',', '.') or 0)
-                except:
-                    continue
-
-                if not name or qty == 0:
-                    continue
-
-                # Ищем товар в базе
-                products = sb_get("products", {
-                    "name": f"ilike.*{name[:20]}*", "limit": "1"
-                })
-                prod_id = products[0]["id"] if products else None
-                cost_price = products[0].get("cost_price", 0) if products else 0
-
-                if order_db_id:
-                    sb_post("order_items", {
-                        "order_id": order_db_id,
-                        "product_id": prod_id,
-                        "product_name": name,
-                        "qty": qty,
-                        "sell_price": price,
-                        "cost_price": cost_price
-                    })
-
-                    # Списываем со склада
-                    if prod_id:
-                        prod = products[0]
-                        new_qty = max(0, (prod.get("stock_qty") or 0) - qty)
-                        sb_patch("products", {"id": prod_id}, {"stock_qty": new_qty})
-                        sb_post("stock_movements", {
-                            "product_id": prod_id,
-                            "product_name": name,
-                            "type": "out",
-                            "qty": qty,
-                            "sell_price": price,
-                            "cost_price": cost_price,
-                            "order_id": oid
-                        })
-            new_count += 1
+        order_row = sb_post("orders", {
+            "site_order_id": oid,
+            "order_date": o["order_date"],
+            "total_amount": o["total_amount"],
+            "customer_name": o["customer_name"],
+            "customer_phone": o["customer_phone"],
+            "status": o["status"],
+        })
+        new_count += 1
 
     print(f"Новых заказов: {new_count}")
     return new_count
