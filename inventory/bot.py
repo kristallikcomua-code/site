@@ -69,6 +69,22 @@ def sb_patch(table: str, match: dict, data: dict):
     return r.json()
 
 # ─── AI parsing ───────────────────────────────────────────────────────────────
+FIND_BY_PHOTO_PROMPT = """Ти помічник з обліку складу аксесуарів для волосся.
+Проаналізуй фото товару і витягни:
+1. Артикул/номер (якщо видно на етикетці, упаковці, бирці)
+2. Назву товару (тип: краб, шпилька, резинка, заколка тощо)
+3. Колір
+4. Розмір (якщо видно)
+
+Поверни тільки JSON:
+{
+  "sku": "артикул або null",
+  "name": "назва товару",
+  "color": "колір або null",
+  "size": "розмір або null",
+  "search_query": "найкращий пошуковий запит для пошуку в базі (1-4 слова)"
+}"""
+
 STOCKCOUNT_PROMPT = """Ти помічник з обліку складу.
 Проаналізуй фото і визнач кількість кожного виду товару що видно.
 Поверни тільки JSON, без пояснень:
@@ -100,6 +116,23 @@ INVOICE_PROMPT = """Ты помощник по учёту склада.
 Если что-то непонятно — поставь null. Все числа без знака валюты (только цифры)."""
 
 CURRENCY = "$"
+
+async def parse_find_by_photo(image_bytes: bytes, mime: str = "image/jpeg") -> dict:
+    b64 = base64.standard_b64encode(image_bytes).decode()
+    msg = claude.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=500,
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": mime, "data": b64}},
+                {"type": "text", "text": FIND_BY_PHOTO_PROMPT}
+            ]
+        }]
+    )
+    raw = msg.content[0].text.strip()
+    raw = re.sub(r"^```json\s*|^```\s*|\s*```$", "", raw, flags=re.MULTILINE).strip()
+    return json.loads(raw)
 
 async def parse_stockcount_image(image_bytes: bytes, mime: str = "image/jpeg") -> dict:
     b64 = base64.standard_b64encode(image_bytes).decode()
@@ -377,6 +410,8 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("📦 Накладна (прихід)", callback_data="mode_invoice"),
         InlineKeyboardButton("📊 Перерахунок залишків", callback_data="mode_stockcount"),
+    ], [
+        InlineKeyboardButton("🔍 Знайти товар за фото", callback_data="mode_find"),
     ]])
     await update.message.reply_text("Що на фото?", reply_markup=kb)
 
@@ -464,6 +499,66 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 log.error(f"Photo invoice error: {e}")
                 await query.message.reply_text(f"❌ Не вдалось розпізнати: {e}")
+
+        elif query.data == "mode_find":
+            await query.edit_message_text("🔍 Аналізую фото...")
+            try:
+                parsed = await parse_find_by_photo(img_bytes)
+                sku        = parsed.get("sku")
+                name       = parsed.get("name") or ""
+                color      = parsed.get("color")
+                size       = parsed.get("size")
+                search_q   = parsed.get("search_query") or name
+
+                # Ищем в базе: сначала по SKU, потом по названию
+                found = {}
+                if sku:
+                    by_sku = sb_get("products", {"sku": f"ilike.*{sku}*", "limit": "5"})
+                    for p in by_sku:
+                        found[p["id"]] = p
+                if search_q:
+                    by_name = sb_get("products", {"name": f"ilike.*{search_q[:25]}*", "limit": "5"})
+                    for p in by_name:
+                        found[p["id"]] = p
+
+                # Формируем ответ
+                info_lines = ["🔍 *Що знайдено на фото:*"]
+                if sku:   info_lines.append(f"• Артикул: `{sku}`")
+                if name:  info_lines.append(f"• Товар: {name}")
+                if color: info_lines.append(f"• Колір: {color}")
+                if size:  info_lines.append(f"• Розмір: {size}")
+                info_lines.append("")
+
+                if found:
+                    info_lines.append(f"📦 *Знайдено в базі ({len(found)}):*\n")
+                    for p in list(found.values())[:5]:
+                        qty = p.get("stock_qty") or 0
+                        status = "🟢" if qty > 3 else ("🟡" if qty > 0 else "🔴")
+                        info_lines.append(
+                            f"{status} *{p['name']}*\n"
+                            f"   Артикул: `{p.get('sku') or '—'}`  |  Залишок: {qty} шт\n"
+                            f"   Ціна: ${p.get('cost_price') or '—'} / ₴{p.get('sell_price') or '—'}"
+                        )
+                    # Кнопки для установки SKU если его нет
+                    buttons = []
+                    for p in list(found.values())[:5]:
+                        if not p.get("sku") and sku:
+                            buttons.append([InlineKeyboardButton(
+                                f"✏️ Зберегти артикул для: {p['name'][:25]}",
+                                callback_data=f"set_sku_{p['id']}"
+                            )])
+                    kb = InlineKeyboardMarkup(buttons) if buttons else None
+                    await query.message.reply_text(
+                        "\n".join(info_lines), parse_mode="Markdown", reply_markup=kb
+                    )
+                else:
+                    info_lines.append("❌ *В базі не знайдено.*\nСпробуй /find з назвою вручну.")
+                    await query.message.reply_text("\n".join(info_lines), parse_mode="Markdown")
+
+            except Exception as e:
+                log.error(f"Find by photo error: {e}")
+                await query.message.reply_text(f"❌ Помилка аналізу фото: {e}")
+            return
 
         else:  # mode_stockcount
             await query.edit_message_text("📊 Рахую залишки на фото...")
