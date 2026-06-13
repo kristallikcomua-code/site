@@ -27,6 +27,7 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
 AI_KEY       = os.environ.get("ANTHROPIC_API_KEY")
 MWEBBY_TOKEN = os.environ.get("MWEBBY_TOKEN")
+MWEBBY_BASE  = os.environ.get("MWEBBY_BASE", "https://kristallik.mwebby.com/api/v1.0")
 
 if not BOT_TOKEN:
     config_path = os.path.join(os.path.dirname(__file__), "..", "inventory-config.yaml")
@@ -37,6 +38,7 @@ if not BOT_TOKEN:
     SUPABASE_KEY = cfg["supabase_service_key"]
     AI_KEY       = cfg["anthropic_api_key"]
     MWEBBY_TOKEN = cfg.get("monsterwebby_token", "")
+    MWEBBY_BASE  = cfg.get("monsterwebby_base", MWEBBY_BASE)
 
 claude = anthropic.Anthropic(api_key=AI_KEY)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -570,13 +572,42 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         "\n".join(info_lines), parse_mode="Markdown", reply_markup=kb
                     )
                 else:
-                    info_lines.append(
-                        "❌ *Товар не знайдено в базі.*\n\n"
-                        "Це означає що:\n"
-                        "• Товару ще немає на сайті kristallik.com.ua\n"
-                        "• Або він є, але під іншою назвою\n\n"
-                        f"Спробуй: /find {search_q}"
-                    )
+                    # Шукаємо на сайті через mWebby API
+                    site_results = []
+                    try:
+                        queries = [q for q in [sku, search_q] if q]
+                        for q in queries:
+                            r = httpx.get(
+                                f"{MWEBBY_BASE}/products",
+                                headers={"Authorization": f"Bearer {MWEBBY_TOKEN}"},
+                                params={"search": q, "limit": 3},
+                                timeout=8
+                            )
+                            if r.status_code == 200:
+                                data = r.json()
+                                items = data if isinstance(data, list) else data.get("data") or data.get("products") or []
+                                site_results.extend(items[:3])
+                                if site_results:
+                                    break
+                    except Exception:
+                        pass
+
+                    if site_results:
+                        info_lines.append("❌ *В базі не знайдено*, але на сайті є:\n")
+                        for item in site_results[:3]:
+                            site_name = item.get("name") or item.get("title") or "—"
+                            site_id   = item.get("id") or ""
+                            site_url  = f"https://kristallik.com.ua/product/{site_id}" if site_id else ""
+                            info_lines.append(f"🌐 *{site_name}*")
+                            if site_url:
+                                info_lines.append(f"   {site_url}")
+                        info_lines.append(f"\nЗапусти /sync щоб додати в базу")
+                    else:
+                        info_lines.append(
+                            "❌ *Товар не знайдено ні в базі, ні на сайті.*\n\n"
+                            "Схоже цього товару ще немає в kristallik.com.ua\n\n"
+                            f"Спробуй: /find {search_q}"
+                        )
                     await query.message.reply_text("\n".join(info_lines), parse_mode="Markdown")
 
             except Exception as e:
