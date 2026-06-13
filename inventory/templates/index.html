@@ -244,14 +244,19 @@ async function loadMovements() {
   document.getElementById("movements-table").innerHTML = `<table><thead><tr><th>Дата</th><th>Тип</th><th>Товар</th><th>Кол-во</th><th>Цена</th><th>Источник</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
+const ALL_TABS = ["stock","top","together","orders","customers","expenses","movements"];
+
 function showTab(name) {
-  ["stock","orders","expenses","movements"].forEach(t => {
+  ALL_TABS.forEach((t, i) => {
     document.getElementById("tab-"+t).style.display = t === name ? "" : "none";
-    document.querySelectorAll(".tab")[["stock","orders","expenses","movements"].indexOf(t)].classList.toggle("active", t === name);
+    document.querySelectorAll(".tab")[i].classList.toggle("active", t === name);
   });
-  if (name === "orders") loadOrders();
-  if (name === "expenses") loadExpenses();
+  if (name === "orders")    loadOrders();
+  if (name === "expenses")  loadExpenses();
   if (name === "movements") loadMovements();
+  if (name === "top")       loadTopProducts();
+  if (name === "together")  loadTogether();
+  if (name === "customers") loadCustomers();
 }
 
 async function syncData() {
@@ -274,6 +279,27 @@ async function saveRate() {
   await loadStock();
   document.querySelector(".rate-block button").textContent = "✅ Сохранено";
   setTimeout(() => document.querySelector(".rate-block button").textContent = "Сохранить", 2000);
+}
+
+async function loadTopProducts() {
+  const data = await fetch("/api/top_products").then(r => r.json());
+  if (!data.length) { document.getElementById("top-table").innerHTML = "<div class='loading'>Нет данных</div>"; return; }
+  let rows = data.map((p, i) => `<tr><td>${i+1}</td><td>${p.name}</td><td>${p.qty}</td><td>${fmt(p.revenue_uah)}</td><td>${p.orders}</td></tr>`).join("");
+  document.getElementById("top-table").innerHTML = `<table><thead><tr><th>#</th><th>Товар</th><th>Продано шт</th><th>Выручка</th><th>Заказов</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+async function loadTogether() {
+  const data = await fetch("/api/together").then(r => r.json());
+  if (!data.length) { document.getElementById("together-table").innerHTML = "<div class='loading'>Нет данных</div>"; return; }
+  let rows = data.map(p => `<tr><td>${p.a}</td><td>${p.b}</td><td>${p.count}</td></tr>`).join("");
+  document.getElementById("together-table").innerHTML = `<table><thead><tr><th>Товар A</th><th>Товар B</th><th>Раз вместе</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+async function loadCustomers() {
+  const data = await fetch("/api/customers").then(r => r.json());
+  if (!data.length) { document.getElementById("customers-table").innerHTML = "<div class='loading'>Нет покупателей</div>"; return; }
+  let rows = data.map(c => `<tr><td>${c.name||''}</td><td>${c.phone||''}</td><td>${c.orders_count||0}</td><td>${fmt(c.total_spent)}</td><td>${(c.last_order_date||'').slice(0,10)}</td></tr>`).join("");
+  document.getElementById("customers-table").innerHTML = `<table><thead><tr><th>Имя</th><th>Телефон</th><th>Заказов</th><th>Сумма</th><th>Последний заказ</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 async function loadRate() {
