@@ -321,12 +321,13 @@ log = logging.getLogger(__name__)
 
 async def _auto_sync():
     """Автосинхронизация заказов каждые 30 минут."""
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import sync_site
+
     await asyncio.sleep(60)  # первый запуск через 1 мин после старта
     while True:
         try:
-            import sys
-            sys.path.insert(0, os.path.dirname(__file__))
-            import sync_site
             new = sync_site.sync_orders()
             if new:
                 log.info(f"Auto-sync: {new} новых заказов")

@@ -4,18 +4,24 @@
 - Новые заказы → база → списание со склада
 - Остаток = 0 → unavailable на сайте
 """
-import yaml, httpx, re, requests
+import os, yaml, httpx, re, requests
 from datetime import datetime
 from html import unescape
 
-with open("../inventory-config.yaml") as f:
-    cfg = yaml.safe_load(f)
-
-BASE         = cfg["monsterwebby_base"]
-MW_TOKEN     = cfg["monsterwebby_token"]
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
+MW_TOKEN     = os.environ.get("MWEBBY_TOKEN", "")
+BASE         = os.environ.get("MWEBBY_BASE", "https://kristallik.mwebby.com/api/v1.0")
 MW_SITE      = "https://kristallik.mwebby.com"
-SUPABASE_URL = cfg["supabase_url"]
-SUPABASE_KEY = cfg["supabase_service_key"]
+
+if not SUPABASE_URL:
+    _cfg = os.path.join(os.path.dirname(__file__), "..", "inventory-config.yaml")
+    with open(_cfg) as f:
+        cfg = yaml.safe_load(f)
+    SUPABASE_URL = cfg["supabase_url"]
+    SUPABASE_KEY = cfg["supabase_service_key"]
+    MW_TOKEN     = cfg.get("monsterwebby_token", "")
+    BASE         = cfg.get("monsterwebby_base", BASE)
 
 SB = {
     "apikey": SUPABASE_KEY,
