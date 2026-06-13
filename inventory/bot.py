@@ -472,12 +472,30 @@ async def handle_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         log.error(f"Doc parse error: {e}")
         await update.message.reply_text(f"❌ Не удалось разобрать: {e}")
 
+async def _send_stockcount_preview(message, ctx, items):
+    lines = ["📊 *Перерахунок залишків*\n"]
+    for i, it in enumerate(items, 1):
+        qty = it.get("qty")
+        lines.append(f"{i}. {it['name']} — *{qty if qty is not None else '?'} шт*")
+    lines.append("\nНатисни на позицію щоб змінити кількість:")
+    rows = []
+    for i, it in enumerate(items):
+        rows.append([InlineKeyboardButton(
+            f"✏️ {i+1}. {it['name'][:22]} — {it.get('qty', '?')} шт",
+            callback_data=f"sc_edit_{i}"
+        )])
+    rows.append([
+        InlineKeyboardButton("✅ Підтвердити", callback_data="stockcount_confirm"),
+        InlineKeyboardButton("❌ Скасувати", callback_data="stockcount_cancel"),
+    ])
+    await message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(rows))
+
 async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
     # ── Вибір режиму фото ──────────────────────────────────────────────────────
-    if query.data in ("mode_invoice", "mode_stockcount"):
+    if query.data in ("mode_invoice", "mode_stockcount", "mode_find"):
         file_id = ctx.user_data.pop("pending_photo_file_id", None)
         if not file_id:
             await query.edit_message_text("❌ Фото не знайдено, надішли ще раз.")
@@ -570,16 +588,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     return
                 # Зберігаємо у user_data
                 ctx.user_data["stockcount_items"] = items
-                lines = ["📊 *Перерахунок залишків*\n"]
-                for i, it in enumerate(items, 1):
-                    qty = it.get("qty")
-                    lines.append(f"{i}. {it['name']} — *{qty if qty is not None else '?'} шт*")
-                lines.append("\nОновити залишки в базі?")
-                kb = InlineKeyboardMarkup([[
-                    InlineKeyboardButton("✅ Підтвердити", callback_data="stockcount_confirm"),
-                    InlineKeyboardButton("❌ Скасувати", callback_data="stockcount_cancel"),
-                ]])
-                await query.message.reply_text("\n".join(lines), parse_mode="Markdown", reply_markup=kb)
+                await _send_stockcount_preview(query.message, ctx, items)
             except Exception as e:
                 log.error(f"Stockcount error: {e}")
                 await query.message.reply_text(f"❌ Помилка: {e}")
@@ -619,6 +628,21 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if query.data == "stockcount_cancel":
         ctx.user_data.pop("stockcount_items", None)
         await query.edit_message_text("❌ Перерахунок скасовано.")
+        return
+
+    # ── Редагування кількості в перерахунку ───────────────────────────────────
+    if query.data.startswith("sc_edit_"):
+        idx = int(query.data.split("_")[-1])
+        items = ctx.user_data.get("stockcount_items", [])
+        if idx >= len(items):
+            await query.answer("Позиція не знайдена")
+            return
+        it = items[idx]
+        ctx.user_data["sc_editing_idx"] = idx
+        await query.message.reply_text(
+            f"✏️ *{it['name']}*\nПоточна кількість: *{it.get('qty', '?')} шт*\n\nВведи нову кількість (число):",
+            parse_mode="Markdown"
+        )
         return
 
     # ── Встановлення артикулу ──────────────────────────────────────────────────
@@ -780,6 +804,21 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
+
+    # Редагування кількості в перерахунку
+    if "sc_editing_idx" in ctx.user_data:
+        idx = ctx.user_data.pop("sc_editing_idx")
+        items = ctx.user_data.get("stockcount_items", [])
+        try:
+            new_qty = int(text.strip())
+            items[idx]["qty"] = new_qty
+            ctx.user_data["stockcount_items"] = items
+            await update.message.reply_text(f"✅ Оновлено: *{items[idx]['name']}* — {new_qty} шт", parse_mode="Markdown")
+            await _send_stockcount_preview(update.message, ctx, items)
+        except ValueError:
+            ctx.user_data["sc_editing_idx"] = idx
+            await update.message.reply_text("❌ Введи ціле число, наприклад: `120`", parse_mode="Markdown")
+        return
 
     # Встановлення артикулу
     if "awaiting_sku_product_id" in ctx.user_data:
